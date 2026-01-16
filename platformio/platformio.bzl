@@ -30,18 +30,6 @@ _COPY_COMMAND = "cp {source} {destination}"
 # the destination directory if it doesn't exist.
 _UNZIP_COMMAND = "mkdir -p {project_dir} && unzip -qq -o -d {project_dir} {zip_filename}"
 
-# Command that executes the PlatformIO build system and builds the project in
-# the specified directory.
-_BUILD_COMMAND = "platformio run -d {project_dir}"
-
-# Command that executes the PlatformIO build system and uploads the compiled
-# firmware to the device.
-_UPLOAD_COMMAND = "platformio run -d {project_dir} -t upload"
-
-# Command that executed the PlatformIO system to upload data files to the
-# device's FS
-_FS_UPLOAD_COMMAND = "platformio run -d {project_dir} -t uploadfs"
-
 # Header used in the shell script that makes platformio_project executable.
 # Execution will upload the firmware to the Arduino device.
 _SHELL_HEADER = """#!/bin/bash"""
@@ -289,53 +277,36 @@ def _emit_build_action(ctx, project_dir, output_files, project_inputs):
         ],
     )
 
-    commands = []
+    args = ["run", "-d", project_dir]
     for zip_file in transitive_zip_files.to_list():
-        commands.append(_UNZIP_COMMAND.format(
-            project_dir = project_dir,
-            zip_filename = zip_file.path,
-        ))
-    commands.append(_BUILD_COMMAND.format(project_dir = project_dir))
+        args.extend(["--bazel-unzip", "{}:{}".format(zip_file.path, project_dir)])
 
     # The PlatformIO build system needs the project configuration file, the main
     # file and all the transitive dependancies.
-    inputs = [output_files.platformio_ini] + project_inputs
+    inputs = [output_files.platformio_ini, ctx.executable._pio_tool] + project_inputs
     for zip_file in transitive_zip_files.to_list():
         inputs.append(zip_file)
-    ctx.actions.run_shell(
-        inputs = inputs,
+    
+    ctx.actions.run(
         outputs = [output_files.firmware_elf],
-        command = "\n".join(commands),
+        inputs = inputs,
+        executable = ctx.executable._pio_tool,
+        arguments = args,
         env = {
-            # The PlatformIO binary assumes that the build tools are in the path.
-            "PATH": "/bin:/usr/bin:/usr/local/bin:/usr/sbin:/sbin:/opt/homebrew/bin",
-
             # Changes the Encoding to allow PlatformIO's Click to work as expected
             # See https://github.com/mum4k/platformio_rules/issues/22
             "LC_ALL": "C.UTF-8",
             "LANG": "C.UTF-8",
         },
         execution_requirements = {
-            # PlatformIO cannot be executed in a sandbox.
+            # PlatformIO cannot be executed in a sandbox because it needs access 
+            # to ~/.platformio for toolchains and platforms.
             "local": "1",
         },
     )
 
 def _emit_executable_action(ctx, project_dir):
-    """Emits a Bazel action that produces executable script.
-
-    When the script is executed, the compiled firmware gets uploaded to the
-    Arduino device.
-
-    Args:
-      ctx: The Starlark context.
-      project_dir: A string, the main directory of the PlatformIO project.
-        This is where the zip files will be extracted.
-    """
-
-    # TODO(mum4k): Make this script smarter, when executed via Bazel, the current
-    # directory is project_name.runfiles/__main__ so we need to go two dirs up.
-    # This however won't work when executed directly.
+    """Emits a Bazel action that produces executable script."""
     transitive_zip_files = depset(
         transitive = [
             dep[PlatformIOLibraryInfo].default_runfiles.files
@@ -344,12 +315,12 @@ def _emit_executable_action(ctx, project_dir):
     )
 
     commands = [_SHELL_HEADER]
+    args = ["run", "-d", project_dir, "-t", "upload"]
     for zip_file in transitive_zip_files.to_list():
-        commands.append(_UNZIP_COMMAND.format(
-            project_dir = project_dir,
-            zip_filename = zip_file.short_path,
-        ))
-    commands.append(_UPLOAD_COMMAND.format(project_dir = project_dir))
+        args.extend(["--bazel-unzip", "{}:{}".format(zip_file.short_path, project_dir)])
+    
+    commands.append("{} {}".format(ctx.executable._pio_tool.short_path, " ".join(args)))
+    
     ctx.actions.write(
         output = ctx.outputs.executable,
         content = "\n".join(commands),
@@ -374,19 +345,26 @@ def _platformio_project_impl(ctx):
     project_run_dir = "./%s" % project_build_dir[len(output_files.platformio_ini.root.path) + 1:]
     _emit_executable_action(ctx, project_run_dir)
 
-    default_info_files = [
+    # We must include the pio_tool and its runfiles in the project's runfiles
+    # so that the generated shell script can find them.
+    runfiles_files = [
         ctx.outputs.executable,
         output_files.platformio_ini,
         output_files.firmware_elf,
-    ] + project_inputs + depset(
-        transitive = [
-            dep[PlatformIOLibraryInfo].default_runfiles.files
-            for dep in ctx.attr.deps
-        ],
-    ).to_list()
-    return DefaultInfo(
-        default_runfiles = ctx.runfiles(files = default_info_files),
-    )
+    ] + project_inputs
+    
+    runfiles = ctx.runfiles(files = runfiles_files)
+    runfiles = runfiles.merge(ctx.attr._pio_tool[DefaultInfo].default_runfiles)
+    
+    transitive_runfiles = [
+        dep[PlatformIOLibraryInfo].default_runfiles
+        for dep in ctx.attr.deps
+    ]
+    runfiles = runfiles.merge_all(transitive_runfiles)
+
+    return [
+        DefaultInfo(default_runfiles = runfiles),
+    ]
 
 def _emit_upload_fs_ini_file_action(ctx, platformio_ini):
     """Emits a Bazel action that generates the PlatformIO configuration file.
@@ -448,18 +426,9 @@ def _emit_upload_fs_copy_action(ctx, fs_dir):
     )
 
 def _emit_upload_fs_executable_action(ctx, project_dir):
-    """Emits a Bazel action that produces executable script.
-
-    When the script is executed, the compiled firmware gets uploaded to the
-    Arduino device.
-
-    Args:
-      ctx: The Starlark context.
-      project_dir: A string, the main directory of the PlatformIO project.
-        This is where the zip files will be extracted.
-    """
+    """Emits a Bazel action that produces executable script."""
     commands = [_SHELL_HEADER]
-    commands.append(_FS_UPLOAD_COMMAND.format(project_dir = project_dir))
+    commands.append("{} run -d {} -t uploadfs".format(ctx.executable._pio_tool.short_path, project_dir))
     ctx.actions.write(
         output = ctx.outputs.executable,
         content = "\n".join(commands),
@@ -476,9 +445,13 @@ def _platformio_fs_impl(ctx):
         ctx,
         "./%s" % platformio_ini.dirname[len(platformio_ini.root.path) + 1:],
     )
-    return DefaultInfo(
-        default_runfiles = ctx.runfiles(files = [ctx.outputs.executable, platformio_ini, fs_dir]),
-    )
+    
+    runfiles = ctx.runfiles(files = [ctx.outputs.executable, platformio_ini, fs_dir])
+    runfiles = runfiles.merge(ctx.attr._pio_tool[DefaultInfo].default_runfiles)
+    
+    return [
+        DefaultInfo(default_runfiles = runfiles),
+    ]
 
 # --- START: Renamed original rule to be "private" ---
 _platformio_library = rule(
@@ -535,6 +508,11 @@ _platformio_project = rule(
     implementation = _platformio_project_impl,
     executable = True,
     attrs = {
+        "_pio_tool": attr.label(
+            default = Label("//platformio:pio_tool"),
+            executable = True,
+            cfg = "exec",
+        ),
         "_platformio_ini_tmpl": attr.label(
             default = Label("//platformio:platformio_ini_tmpl"),
             allow_single_file = True,
@@ -778,6 +756,11 @@ platformio_fs = rule(
     implementation = _platformio_fs_impl,
     executable = True,
     attrs = {
+        "_pio_tool": attr.label(
+            default = Label("//platformio:pio_tool"),
+            executable = True,
+            cfg = "exec",
+        ),
         "_platformio_ini_tmpl": attr.label(
             default = Label("//platformio:platformio_ini_tmpl"),
             allow_single_file = True,

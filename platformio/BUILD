@@ -12,6 +12,25 @@ py_binary(
     ]
 )
 
+py_binary(
+    name = "pio_tool",
+    srcs = ["pio_wrapper.py"],
+    main = "pio_wrapper.py",
+    deps = [
+        requirement("platformio"),
+        requirement("click"),
+        requirement("semantic_version"),
+        requirement("tabulate"),
+        requirement("requests"),
+        requirement("pyserial"),
+        requirement("esptool"),
+        requirement("bitstring"),
+        requirement("reedsolo"),
+        requirement("cryptography"),
+        requirement("intelhex"),
+    ],
+)
+
 filegroup(
     name = "platformio_ini_tmpl",
     srcs = ["platformio.ini.tmpl"],
