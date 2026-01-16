@@ -13,3 +13,9 @@ compile_pip_requirements(
     requirements_txt = "requirements_lock.txt",
     requirements_windows = "requirements_windows.txt",
 )
+
+alias(
+    name = "esp32_framework",
+    actual = "@platformio_framework_esp32//:headers",
+    visibility = ["//visibility:public"],
+)
