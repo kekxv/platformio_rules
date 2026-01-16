@@ -23,6 +23,22 @@ These are Bazel Starlark rules for building and uploading
 load("//platformio:extension.bzl", "PlatformIOConfig")
 load("//platformio:config.bzl", "get_platformio_board", "get_platformio_platform", "get_platformio_framework", "get_platformio_port", "get_platformio_programmer", "get_platformio_lib_ldf_mode", "get_platformio_lib_deps", "get_platformio_build_flags", "get_platformio_environment_kwargs")
 
+def _clionize_label(label_str):
+    """Transforms a label to its corresponding CLion backing library label."""
+    if ":" in label_str:
+        package, target = label_str.rsplit(":", 1)
+        return package + ":__" + target + "_clion"
+    elif label_str.startswith("//"):
+        # Absolute label without colon, e.g. //path/to/pkg
+        # Target name is the last component of the package path
+        package_parts = label_str[2:].split("/")
+        target = package_parts[-1]
+        return label_str + ":__" + target + "_clion"
+    elif label_str.startswith(":"):
+        return ":__" + label_str[1:] + "_clion"
+    else:
+        return "__" + label_str + "_clion"
+
 # Helper function to get default configuration
 def _get_default_config(attr_name, default_value = None):
     """Try to get default value from a config target if it exists.
@@ -66,17 +82,16 @@ _ZIP_COMMAND = "cd {output_dir} && zip -qq -r -u {zip_filename} lib/; cd -"
 _UNZIP_COMMAND = "mkdir -p {project_dir} && unzip -qq -o -d {project_dir} {zip_filename}"
 
 # Command that executes the PlatformIO build system and builds the project in
-# the specified directory. Uses python -m platformio to ensure it runs properly
-# through rules_python without PATH issues.
-_BUILD_COMMAND = "python3 -m platformio run -d {project_dir}"
+# the specified directory.
+_BUILD_COMMAND = "platformio run -d {project_dir}"
 
 # Command that executes the PlatformIO build system and uploads the compiled
 # firmware to the device.
-_UPLOAD_COMMAND = "python -m platformio run -d {project_dir} -t upload"
+_UPLOAD_COMMAND = "platformio run -d {project_dir} -t upload"
 
 # Command that executed the PlatformIO system to upload data files to the
 # device's FS
-_FS_UPLOAD_COMMAND = "python -m platformio run -d {project_dir} -t uploadfs"
+_FS_UPLOAD_COMMAND = "platformio run -d {project_dir} -t uploadfs"
 
 # Header used in the shell script that makes platformio_project executable.
 # Execution will upload the firmware to the Arduino device.
@@ -337,24 +352,6 @@ def _emit_build_action(ctx, project_dir, output_files):
         inputs = inputs,
         outputs = [output_files.firmware_elf],
         command = "\n".join(commands),
-        env = {
-            # The PlatformIO binary assumes that the build tools are in the path.
-            "PATH": "/bin:/usr/bin:/usr/local/bin:/usr/sbin:/sbin:/opt/homebrew/bin",
-
-            # Changes the Encoding to allow PlatformIO's Click to work as expected
-            # See https://github.com/mum4k/platformio_rules/issues/22
-            "LC_ALL": "C.UTF-8",
-            "LANG": "C.UTF-8",
-            
-            # Set PYTHONPATH to include the py_deps virtual environment
-            # This allows python -m platformio to find platformio and its dependencies
-            "PYTHONPATH": "/usr/local/lib/python3.12/site-packages",
-        },
-        execution_requirements = {
-            # PlatformIO cannot be executed in a sandbox.
-            "local": "1",
-        },
-    )
         env = {
             # The PlatformIO binary assumes that the build tools are in the path.
             "PATH": "/bin:/usr/bin:/usr/local/bin:/usr/sbin:/sbin:/opt/homebrew/bin",
@@ -778,7 +775,7 @@ def platformio_library(name, hdr, src = None, srcs = [], add_hdrs = [], add_srcs
     clion_hdrs = [hdr] + add_hdrs
 
     # Transform deps from ":my_lib" to ":__my_lib_clion"
-    clion_deps_ = ["__{}_clion".format(d.split(":")[-1]) for d in deps]
+    clion_deps_ = [_clionize_label(d) for d in deps]
 
     # 2. Create the hidden cc_binary for CLion
     clion_includes = list(includes)  # Create a mutable copy
@@ -791,7 +788,7 @@ def platformio_library(name, hdr, src = None, srcs = [], add_hdrs = [], add_srcs
         hdrs = clion_hdrs,
         includes = clion_includes,
         deps = clion_deps_ + ide_deps,
-        tags = ["clion"],
+        tags = ["clion", "manual"],
     )
 
 # --- END: NEW Macro for platformio_library ---
@@ -861,7 +858,7 @@ def platformio_project(name, src = None, srcs = [], deps = [], ide_deps = [], es
         clion_includes.append(esp32_framework_include_path)
 
     # Transform deps from ":my_lib" to ":__my_lib_clion"
-    clion_deps_ = ["__{}_clion".format(d.split(":")[-1]) for d in deps]
+    clion_deps_ = [_clionize_label(d) for d in deps]
 
     native.cc_binary(
         name = "__{}_clion".format(name),
@@ -872,7 +869,7 @@ def platformio_project(name, src = None, srcs = [], deps = [], ide_deps = [], es
             "-DARDUINO_ARCH_ESP32",
             "-DARDUINO=10805",
         ],
-        tags = ["clion"],
+        tags = ["clion", "manual"],
     )
 
 # --- END: NEW Macro for platformio_project ---

@@ -1,7 +1,27 @@
 load("@py_deps//:requirements.bzl", "requirement")
+load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 
 package(
     default_visibility = ["//visibility:public"],
+)
+
+bzl_library(
+    name = "extension_bzl",
+    srcs = ["extension.bzl"],
+)
+
+bzl_library(
+    name = "config_bzl",
+    srcs = ["config.bzl"],
+)
+
+bzl_library(
+    name = "platformio_bzl",
+    srcs = ["platformio.bzl"],
+    deps = [
+        ":config_bzl",
+        ":extension_bzl",
+    ],
 )
 
 py_binary(

@@ -4,4 +4,5 @@ stardoc(
     name = "platformio_docs",
     input = "//platformio:platformio.bzl",
     out = "platformio_doc.md",
+    deps = ["//platformio:platformio_bzl"],
 )

@@ -215,7 +215,7 @@
         "bzlTransitiveDigest": "7l3vkTOCPsB1CgeL5FmOxN/k2uBPQ+nCQ3LyBpy8Vog=",
         "usagesDigest": "rIY1c8eroMH+172ujriRz1WqCorUmV27dJUN/VsW4iA=",
         "recordedFileInputs": {
-          "@@//requirements_lock.txt": "d498852719bfeaaf67f9af62dfb3433d76ed82f0acbf55c61f5a85c801607862",
+          "@@//requirements_lock.txt": "c7852249219a8a3b0168c403a3e530d110b192fae31ba0d51493edc11bdf9dae",
           "@@protobuf+//python/requirements.txt": "983be60d3cec4b319dcab6d48aeb3f5b2f7c3350f26b3a9e97486c37967c73c5",
           "@@rules_fuzzing+//fuzzing/requirements.txt": "ab04664be026b632a0d2a2446c4f65982b7654f5b6851d2f9d399a19b7242a5b",
           "@@rules_python+//tools/publish/requirements_darwin.txt": "095d4a4f3d639dce831cd493367631cd51b53665292ab20194bac2c0c6458fa8",
@@ -352,6 +352,15 @@
               "python_interpreter_target": "@@rules_python++python+python_3_12_host//:python",
               "repo": "py_deps_312",
               "requirement": "certifi==2026.1.4 --hash=sha256:9943707519e4add1115f44c2bc244f782c0249876bf51b6599fee1ffbedd685c --hash=sha256:ac726dd470482006e014ad384921ed6438c457018f4b3d204aea4281258b2120"
+            }
+          },
+          "py_deps_312_chardet": {
+            "repoRuleId": "@@rules_python+//python/private/pypi:whl_library.bzl%whl_library",
+            "attributes": {
+              "dep_template": "@py_deps//{name}:{target}",
+              "python_interpreter_target": "@@rules_python++python+python_3_12_host//:python",
+              "repo": "py_deps_312",
+              "requirement": "chardet==5.2.0 --hash=sha256:1b3b6ff479a8c414bc3fa2c0852995695c4a026dcd6d0633b2dd092ca39c1cf7 --hash=sha256:e1cf59446890a00105fe7b7912492ea04b6e6f06d4b742b2c788469e34c82970"
             }
           },
           "py_deps_312_charset_normalizer": {
@@ -2865,6 +2874,7 @@
                 "anyio": "{\"py_deps_312_anyio\":[{\"version\":\"3.12\"}]}",
                 "bottle": "{\"py_deps_312_bottle\":[{\"version\":\"3.12\"}]}",
                 "certifi": "{\"py_deps_312_certifi\":[{\"version\":\"3.12\"}]}",
+                "chardet": "{\"py_deps_312_chardet\":[{\"version\":\"3.12\"}]}",
                 "charset_normalizer": "{\"py_deps_312_charset_normalizer\":[{\"version\":\"3.12\"}]}",
                 "click": "{\"py_deps_312_click\":[{\"version\":\"3.12\"}]}",
                 "colorama": "{\"py_deps_312_colorama\":[{\"version\":\"3.12\"}]}",
@@ -2891,6 +2901,7 @@
                 "anyio",
                 "bottle",
                 "certifi",
+                "chardet",
                 "charset_normalizer",
                 "click",
                 "colorama",
