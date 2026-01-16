@@ -20,6 +20,26 @@ These are Bazel Starlark rules for building and uploading
 [PlatformIO](http://platformio.org/) build system.
 """
 
+load("//platformio:extension.bzl", "PlatformIOConfig")
+load("//platformio:config.bzl", "get_platformio_board", "get_platformio_platform", "get_platformio_framework", "get_platformio_port", "get_platformio_programmer", "get_platformio_lib_ldf_mode", "get_platformio_lib_deps", "get_platformio_build_flags", "get_platformio_environment_kwargs")
+
+# Helper function to get default configuration
+def _get_default_config(attr_name, default_value = None):
+    """Try to get default value from a config target if it exists.
+    
+    This is a placeholder that will be used when reading from config targets.
+    Since Bazel doesn't have true global state, we use a pattern where users
+    can reference a config target, or use the convenience macros.
+    
+    Args:
+        attr_name: The attribute name to look up
+        default_value: Default value if not found
+    
+    Returns:
+        The default value or None
+    """
+    return default_value
+
 # The relative filename of the header file.
 _HEADER_FILENAME = "lib/{dirname}/{filename}.h"
 
@@ -46,16 +66,17 @@ _ZIP_COMMAND = "cd {output_dir} && zip -qq -r -u {zip_filename} lib/; cd -"
 _UNZIP_COMMAND = "mkdir -p {project_dir} && unzip -qq -o -d {project_dir} {zip_filename}"
 
 # Command that executes the PlatformIO build system and builds the project in
-# the specified directory.
-_BUILD_COMMAND = "platformio run -d {project_dir}"
+# the specified directory. Uses python -m platformio to ensure it runs properly
+# through rules_python without PATH issues.
+_BUILD_COMMAND = "python3 -m platformio run -d {project_dir}"
 
 # Command that executes the PlatformIO build system and uploads the compiled
 # firmware to the device.
-_UPLOAD_COMMAND = "platformio run -d {project_dir} -t upload"
+_UPLOAD_COMMAND = "python -m platformio run -d {project_dir} -t upload"
 
 # Command that executed the PlatformIO system to upload data files to the
 # device's FS
-_FS_UPLOAD_COMMAND = "platformio run -d {project_dir} -t uploadfs"
+_FS_UPLOAD_COMMAND = "python -m platformio run -d {project_dir} -t uploadfs"
 
 # Header used in the shell script that makes platformio_project executable.
 # Execution will upload the firmware to the Arduino device.
@@ -303,6 +324,7 @@ def _emit_build_action(ctx, project_dir, output_files):
             project_dir = project_dir,
             zip_filename = zip_file.path,
         ))
+    
     commands.append(_BUILD_COMMAND.format(project_dir = project_dir))
 
     # The PlatformIO build system needs the project configuration file, the main
@@ -310,10 +332,29 @@ def _emit_build_action(ctx, project_dir, output_files):
     inputs = [output_files.platformio_ini, output_files.main_cpp]
     for zip_file in transitive_zip_files.to_list():
         inputs.append(zip_file)
+    
     ctx.actions.run_shell(
         inputs = inputs,
         outputs = [output_files.firmware_elf],
         command = "\n".join(commands),
+        env = {
+            # The PlatformIO binary assumes that the build tools are in the path.
+            "PATH": "/bin:/usr/bin:/usr/local/bin:/usr/sbin:/sbin:/opt/homebrew/bin",
+
+            # Changes the Encoding to allow PlatformIO's Click to work as expected
+            # See https://github.com/mum4k/platformio_rules/issues/22
+            "LC_ALL": "C.UTF-8",
+            "LANG": "C.UTF-8",
+            
+            # Set PYTHONPATH to include the py_deps virtual environment
+            # This allows python -m platformio to find platformio and its dependencies
+            "PYTHONPATH": "/usr/local/lib/python3.12/site-packages",
+        },
+        execution_requirements = {
+            # PlatformIO cannot be executed in a sandbox.
+            "local": "1",
+        },
+    )
         env = {
             # The PlatformIO binary assumes that the build tools are in the path.
             "PATH": "/bin:/usr/bin:/usr/local/bin:/usr/sbin:/sbin:/opt/homebrew/bin",
@@ -578,6 +619,11 @@ _platformio_project = rule(
             executable = True,
             cfg = "exec",
         ),
+        "_platformio_runner": attr.label(
+            default = Label("//platformio:platformio_runner"),
+            executable = True,
+            cfg = "exec",
+        ),
         "src": attr.label(
             allow_single_file = [".cc"],
             doc = """
@@ -691,6 +737,7 @@ A list of external (PlatformIO) libraries that this project depends on.
         # This attribute is only read by the macro, not the rule implementation
         "esp32_framework_include_path": attr.string(),
     },
+    toolchains = ["@rules_python//python:toolchain_type"],
     doc = """
 Defines a project that will be built and uploaded using PlatformIO.
 
@@ -750,13 +797,49 @@ def platformio_library(name, hdr, src = None, srcs = [], add_hdrs = [], add_srcs
 # --- END: NEW Macro for platformio_library ---
 
 # --- START: NEW Macro for platformio_project ---
-def platformio_project(name, src = None, srcs = [], deps = [], ide_deps = [], esp32_framework_include_path = None, includes = [], **kwargs):
-    """A macro that creates a platformio_project and a backing cc_binary for IDE support."""
+def platformio_project(name, src = None, srcs = [], deps = [], ide_deps = [], esp32_framework_include_path = None, includes = [], defaults = None, **kwargs):
+    """A macro that creates a platformio_project and a backing cc_binary for IDE support.
+    
+    This macro supports optional defaults via the `defaults` parameter.
+    
+    Args:
+        name: Name of the target
+        src: Single source file
+        srcs: Multiple source files
+        deps: PlatformIO library dependencies
+        ide_deps: IDE dependencies
+        esp32_framework_include_path: ESP32 framework include path
+        includes: Include paths
+        defaults: Optional defaults dict from platformio_config(). If provided and board/platform/framework
+                 are not explicitly provided, they will use the defaults.
+        **kwargs: Additional arguments passed to the rule (board, platform, framework, etc.)
+    """
 
     # Validate that at least one of src or srcs is provided
     if not src and not srcs:
         fail("Either 'src' or 'srcs' must be provided for platformio_project '{}'".format(name))
 
+    # Apply defaults if provided and not explicitly overridden
+    if defaults:
+        if "board" not in kwargs:
+            kwargs["board"] = get_platformio_board(defaults)
+        if "platform" not in kwargs:
+            kwargs["platform"] = get_platformio_platform(defaults)
+        if "framework" not in kwargs:
+            kwargs["framework"] = get_platformio_framework(defaults)
+        if "port" not in kwargs and get_platformio_port(defaults):
+            kwargs["port"] = get_platformio_port(defaults)
+        if "programmer" not in kwargs:
+            kwargs["programmer"] = get_platformio_programmer(defaults)
+        if "lib_ldf_mode" not in kwargs:
+            kwargs["lib_ldf_mode"] = get_platformio_lib_ldf_mode(defaults)
+        if "lib_deps" not in kwargs and get_platformio_lib_deps(defaults):
+            kwargs["lib_deps"] = get_platformio_lib_deps(defaults)
+        if "build_flags" not in kwargs and get_platformio_build_flags(defaults):
+            kwargs["build_flags"] = get_platformio_build_flags(defaults)
+        if "environment_kwargs" not in kwargs and get_platformio_environment_kwargs(defaults):
+            kwargs["environment_kwargs"] = get_platformio_environment_kwargs(defaults)
+    
     # 1. Create the actual platformio_project target
     _platformio_project(
         name = name,

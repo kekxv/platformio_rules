@@ -182,3 +182,47 @@ Arduino device.
 ```
 bazel run :binary_counter
 ```
+## Avoiding Repetitive Configuration
+
+If you have many projects with the same `board`, `platform`, and `framework` settings, you can define them once and reuse them across all projects.
+
+### Create workspace defaults
+
+Create `platformio/workspace_defaults.bzl`:
+
+```python
+load("//platformio:config.bzl", "platformio_config")
+
+PLATFORMIO_DEFAULTS = platformio_config(
+    board = "megaatmega2560",
+    platform = "atmelavr",
+    framework = "arduino",
+)
+```
+
+### Use defaults in projects
+
+```python
+load("//platformio:platformio.bzl", "platformio_project")
+load("//platformio:workspace_defaults.bzl", "PLATFORMIO_DEFAULTS")
+
+platformio_project(
+    name = "my_project",
+    src = "main.cc",
+    defaults = PLATFORMIO_DEFAULTS,
+)
+```
+
+### Override specific settings
+
+```python
+platformio_project(
+    name = "esp32_project",
+    src = "main.cc",
+    defaults = PLATFORMIO_DEFAULTS,
+    board = "esp32dev",        # Override default board
+    platform = "espressif32",  # Override default platform
+)
+```
+
+For more details, see the [Defaults Configuration Guide](docs/DEFAULTS_GUIDE.md) and [Migration Guide](docs/MIGRATION_GUIDE.md).
