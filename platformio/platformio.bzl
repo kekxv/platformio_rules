@@ -51,6 +51,7 @@ PlatformIOLibraryInfo = provider(
     fields = {
         "default_runfiles": "Files needed to execute anything depending on this library.",
         "transitive_libdeps": "External platformIO libraries needed by this library.",
+        "transitive_defines": "Defines to be propagated to dependents.",
     },
 )
 
@@ -123,10 +124,17 @@ def _platformio_library_impl(ctx):
     for dep in ctx.attr.deps:
         transitive_libdeps.extend(dep[PlatformIOLibraryInfo].transitive_libdeps)
 
+    # Collect transitive defines
+    transitive_defines = depset(
+        ctx.attr.defines,
+        transitive = [dep[PlatformIOLibraryInfo].transitive_defines for dep in ctx.attr.deps],
+    )
+
     return [
         PlatformIOLibraryInfo(
             default_runfiles = runfiles,
             transitive_libdeps = transitive_libdeps,
+            transitive_defines = transitive_defines,
         ),
         DefaultInfo(files = depset([zip_file])),
     ]
@@ -164,11 +172,26 @@ def _emit_ini_file_action(ctx, platformio_ini):
             continue
         environment_kwargs.append("{key} = {value}".format(key = key, value = value))
 
-    build_flags = []
-    for flag in ctx.attr.build_flags:
-        if flag == "":
-            continue
-        build_flags.append(flag)
+    build_flags = list(ctx.attr.build_flags)
+    
+    # Add local_defines and defines from the target itself
+    for d in ctx.attr.local_defines:
+        build_flags.append("-D" + d)
+    for d in ctx.attr.defines:
+        build_flags.append("-D" + d)
+    
+    # Add transitive defines from dependencies
+    transitive_defines_list = []
+    for dep in ctx.attr.deps:
+        for d in dep[PlatformIOLibraryInfo].transitive_defines.to_list():
+            if d not in transitive_defines_list:
+                transitive_defines_list.append(d)
+    
+    for d in transitive_defines_list:
+        # Check if it's already added by the target's own defines to avoid duplicates
+        flag = "-D" + d
+        if flag not in build_flags:
+            build_flags.append(flag)
 
     # Collect and deduplicate lib_deps
     lib_deps_map = {}
@@ -472,6 +495,12 @@ _platformio_library = rule(
             allow_empty = True,
             doc = "A list of labels, source files to include in the resulting zip file.",
         ),
+        "defines": attr.string_list(
+            doc = "List of defines to be propagated to dependents.",
+        ),
+        "local_defines": attr.string_list(
+            doc = "List of defines only for this target.",
+        ),
         "deps": attr.label_list(
             providers = [DefaultInfo, PlatformIOLibraryInfo],
             doc = """
@@ -529,6 +558,12 @@ A list of labels, source files for the project.
             doc = """
 A list of labels, header files for the project.
 """,
+        ),
+        "defines": attr.string_list(
+            doc = "List of defines to be propagated to dependents.",
+        ),
+        "local_defines": attr.string_list(
+            doc = "List of defines only for this target.",
         ),
         "board": attr.string(
             mandatory = True,
@@ -652,7 +687,7 @@ def _get_clion_label(label):
     return label
 
 # --- START: NEW Macro for platformio_library ---
-def platformio_library(name, srcs = [], hdrs = [], deps = [], native_deps = [], esp32_framework_include_path = None, includes = [], **kwargs):
+def platformio_library(name, srcs = [], hdrs = [], deps = [], native_deps = [], defines = [], local_defines = [], esp32_framework_include_path = None, includes = [], **kwargs):
     """A macro that creates a platformio_library and a backing cc_library for IDE support."""
 
     # Filter kwargs to only pass what the rule expects
@@ -667,6 +702,8 @@ def platformio_library(name, srcs = [], hdrs = [], deps = [], native_deps = [], 
         srcs = srcs,
         hdrs = hdrs,
         deps = deps,
+        defines = defines,
+        local_defines = local_defines,
         **rule_kwargs
     )
 
@@ -683,14 +720,16 @@ def platformio_library(name, srcs = [], hdrs = [], deps = [], native_deps = [], 
         hdrs = hdrs,
         includes = clion_includes,
         deps = clion_deps_ + native_deps,
-        tags = ["clion", "manual"],
+        defines = defines,
+        local_defines = local_defines,
+        tags = ["clion"],
         visibility = kwargs.get("visibility"),
     )
 
 # --- END: NEW Macro for platformio_library ---
 
 # --- START: NEW Macro for platformio_project ---
-def platformio_project(name, srcs = [], hdrs = [], deps = [], native_deps = [], esp32_framework_include_path = None, includes = [], **kwargs):
+def platformio_project(name, srcs = [], hdrs = [], deps = [], native_deps = [], defines = [], local_defines = [], esp32_framework_include_path = None, includes = [], **kwargs):
     """A macro that creates a platformio_project and a backing cc_binary for IDE support."""
 
     # Filter kwargs to only pass what the rule expects
@@ -705,6 +744,8 @@ def platformio_project(name, srcs = [], hdrs = [], deps = [], native_deps = [], 
         srcs = srcs,
         hdrs = hdrs,
         deps = deps,
+        defines = defines,
+        local_defines = local_defines,
         **rule_kwargs
     )
 
@@ -720,11 +761,13 @@ def platformio_project(name, srcs = [], hdrs = [], deps = [], native_deps = [], 
         srcs = srcs,
         deps = clion_deps_ + native_deps,
         includes = clion_includes,
+        defines = defines,
+        local_defines = local_defines,
         copts = [
             "-DARDUINO_ARCH_ESP32",
             "-DARDUINO=10805",
         ],
-        tags = ["clion", "manual"],
+        tags = ["clion"],
         visibility = kwargs.get("visibility"),
     )
 
