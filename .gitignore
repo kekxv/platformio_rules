@@ -8,3 +8,5 @@
 .vscode
 
 .clwb
+platformio/__pycache__
+tests/

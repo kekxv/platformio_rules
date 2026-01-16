@@ -126,6 +126,22 @@ def _platformio_library_impl(ctx):
             destination = source_file.path,
         ))
 
+    # Copy all source files from srcs attribute (for multi-file support)
+    if ctx.attr.srcs:
+        for src_file in ctx.attr.srcs:
+            for file in src_file.files.to_list():
+                # Extract just the filename from the full path
+                file_name = file.basename
+                src_destination = ctx.actions.declare_file(
+                    _ADDITIONAL_FILENAME.format(dirname = name, filename = file_name),
+                )
+                inputs.append(file)
+                outputs.append(src_destination)
+                commands.append(_COPY_COMMAND.format(
+                    source = file.path,
+                    destination = src_destination.path,
+                ))
+
     # Zip the entire content of the library folder.
     zip_file = ctx.actions.declare_file("%s.zip" % ctx.attr.name)
     outputs.append(zip_file)
@@ -226,20 +242,44 @@ def _emit_ini_file_action(ctx, platformio_ini):
     )
 
 def _emit_main_file_action(ctx, output_files):
-    """Emits a Bazel action that outputs the project main C++ file.
+    """Emits a Bazel action that outputs the project main C++ files.
 
     Args:
       ctx: The Starlark context.
       output_files: List of output files declared by ctx.actions.declare_file().
     """
-    ctx.actions.run_shell(
-        inputs = [ctx.file.src],
-        outputs = [output_files.main_cpp],
-        command = _COPY_COMMAND.format(
-            source = ctx.file.src.path,
-            destination = output_files.main_cpp.path,
-        ),
-    )
+    # Handle single src file (backward compatibility)
+    if ctx.attr.src:
+        ctx.actions.run_shell(
+            inputs = [ctx.file.src],
+            outputs = [output_files.main_cpp],
+            command = _COPY_COMMAND.format(
+                source = ctx.file.src.path,
+                destination = output_files.main_cpp.path,
+            ),
+        )
+    # Handle multiple srcs files
+    elif ctx.attr.srcs:
+        # Create a directory first
+        commands = ["mkdir -p " + output_files.main_cpp.dirname]
+        inputs = []
+        
+        # Copy all source files to the src directory
+        for src_target in ctx.attr.srcs:
+            for src_file in src_target.files.to_list():
+                file_name = src_file.basename
+                dest_path = output_files.main_cpp.dirname + "/" + file_name
+                commands.append(_COPY_COMMAND.format(
+                    source = src_file.path,
+                    destination = dest_path,
+                ))
+                inputs.append(src_file)
+        
+        ctx.actions.run_shell(
+            inputs = inputs,
+            outputs = [output_files.main_cpp],
+            command = "\n".join(commands) + "\ntouch " + output_files.main_cpp.path,
+        )
 
 def _emit_build_action(ctx, project_dir, output_files):
     """Emits a Bazel action that unzips the libraries and builds the project.
@@ -470,6 +510,14 @@ _platformio_library = rule(
             allow_single_file = [".c", ".cc", ".cpp"],
             doc = "A string, the name of the C++ source file. This is optional.",
         ),
+        "srcs": attr.label_list(
+            allow_files = [".c", ".cc", ".cpp"],
+            allow_empty = True,
+            doc = """
+A list of labels, additional source files to include in the resulting zip file.
+Supports multiple source files for complex libraries.
+""",
+        ),
         "add_hdrs": attr.label_list(
             allow_files = [".h", ".hpp"],
             allow_empty = True,
@@ -506,10 +554,10 @@ indirectly link this library.
 Defines a C++ library that can be imported in an PlatformIO project.
 
 The PlatformIO build system requires a set project directory structure. All
-libraries must be under the lib directory. Furthermore all libraries can only
-consist of a single header and a single source file. The name of the library
-must match the names of the header file, the source file and the subdirectory
-under the lib directory.
+libraries must be under the lib directory. The name of the library must match
+the subdirectory under the lib directory.
+
+Supports multiple source files and headers through the srcs and add_hdrs attributes.
 Outputs a single zip file containing the C++ library in the directory structure
 expected by PlatformIO.
 """,
@@ -532,10 +580,18 @@ _platformio_project = rule(
         ),
         "src": attr.label(
             allow_single_file = [".cc"],
-            mandatory = True,
             doc = """
 A string, the name of the C++ source file, the main file for
-the project that contains the Arduino setup() and loop() functions. This is mandatory.
+the project that contains the Arduino setup() and loop() functions. This is optional
+if srcs is provided.
+""",
+        ),
+        "srcs": attr.label_list(
+            allow_files = [".cc"],
+            allow_empty = True,
+            doc = """
+A list of C++ source files for the project. Use this for multi-file projects.
+At least one of src or srcs must be provided.
 """,
         ),
         "board": attr.string(
@@ -655,7 +711,7 @@ uploading.
 )
 
 # --- START: NEW Macro for platformio_library ---
-def platformio_library(name, hdr, src = None, add_hdrs = [], add_srcs = [], deps = [], ide_deps = [], esp32_framework_include_path = None, includes = [], **kwargs):
+def platformio_library(name, hdr, src = None, srcs = [], add_hdrs = [], add_srcs = [], deps = [], ide_deps = [], esp32_framework_include_path = None, includes = [], **kwargs):
     """A macro that creates a platformio_library and a backing cc_library for IDE support."""
 
     # 1. Create the actual platformio_library target
@@ -663,6 +719,7 @@ def platformio_library(name, hdr, src = None, add_hdrs = [], add_srcs = [], deps
         name = name,
         hdr = hdr,
         src = src,
+        srcs = srcs,
         add_hdrs = add_hdrs,
         add_srcs = add_srcs,
         deps = deps,
@@ -670,7 +727,7 @@ def platformio_library(name, hdr, src = None, add_hdrs = [], add_srcs = [], deps
     )
 
     # 2. Create the hidden cc_library for CLion
-    clion_srcs = ([src] if src else []) + add_srcs
+    clion_srcs = ([src] if src else []) + srcs + add_srcs
     clion_hdrs = [hdr] + add_hdrs
 
     # Transform deps from ":my_lib" to ":__my_lib_clion"
@@ -693,18 +750,29 @@ def platformio_library(name, hdr, src = None, add_hdrs = [], add_srcs = [], deps
 # --- END: NEW Macro for platformio_library ---
 
 # --- START: NEW Macro for platformio_project ---
-def platformio_project(name, src, deps = [], ide_deps = [], esp32_framework_include_path = None, includes = [], **kwargs):
+def platformio_project(name, src = None, srcs = [], deps = [], ide_deps = [], esp32_framework_include_path = None, includes = [], **kwargs):
     """A macro that creates a platformio_project and a backing cc_binary for IDE support."""
+
+    # Validate that at least one of src or srcs is provided
+    if not src and not srcs:
+        fail("Either 'src' or 'srcs' must be provided for platformio_project '{}'".format(name))
 
     # 1. Create the actual platformio_project target
     _platformio_project(
         name = name,
         src = src,
+        srcs = srcs,
         deps = deps,
         **kwargs
     )
 
     # 2. Create the hidden cc_binary for CLion
+    clion_srcs = []
+    if src:
+        clion_srcs.append(src)
+    if srcs:
+        clion_srcs.extend(srcs)
+    
     clion_includes = list(includes)  # Create a mutable copy
     if esp32_framework_include_path:
         clion_includes.append(esp32_framework_include_path)
@@ -714,7 +782,7 @@ def platformio_project(name, src, deps = [], ide_deps = [], esp32_framework_incl
 
     native.cc_binary(
         name = "__{}_clion".format(name),
-        srcs = [src],
+        srcs = clion_srcs,
         deps = clion_deps_ + ide_deps,
         includes = clion_includes,
         copts = [
