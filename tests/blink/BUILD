@@ -19,7 +19,7 @@ configs = [
 
 [platformio_project(
     name = "blink_%s" % config["name"],
-    src = "blink.cc",
+    srcs = ["blink.cc"],
     board = config["board"],
     framework = "arduino",
     platform = "atmelavr",

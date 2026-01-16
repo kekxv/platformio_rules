@@ -43,8 +43,8 @@ cc_test(
 
 platformio_library(
     name = "Button_presses",
-    src = "button_presses.cc",
-    hdr = "button_presses.h",
+    srcs = ["button_presses.cc"],
+    hdrs = ["button_presses.h"],
     deps = [
         "//tests/arduino:Arduino_interface",
     ],

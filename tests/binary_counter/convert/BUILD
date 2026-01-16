@@ -15,7 +15,10 @@
 load("//platformio:platformio.bzl", "platformio_library")
 
 package(
-    default_visibility = ["//tests/binary_counter:__subpackages__"],
+    default_visibility = [
+        "//tests/binary_counter:__subpackages__",
+        "//tests/binary_counter_espressif8266:__subpackages__",
+    ],
 )
 
 cc_library(
@@ -37,6 +40,6 @@ cc_test(
 
 platformio_library(
     name = "Convert",
-    src = "convert.cc",
-    hdr = "convert.h",
+    srcs = ["convert.cc"],
+    hdrs = ["convert.h"],
 )

@@ -44,8 +44,8 @@ cc_test(
 
 platformio_library(
     name = "Led_display",
-    src = "led_display.cc",
-    hdr = "led_display.h",
+    srcs = ["led_display.cc"],
+    hdrs = ["led_display.h"],
     deps = [
         "//tests/arduino:Arduino_interface",
         "//tests/binary_counter/convert:Convert",

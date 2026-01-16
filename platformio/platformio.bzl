@@ -20,26 +20,11 @@ These are Bazel Starlark rules for building and uploading
 [PlatformIO](http://platformio.org/) build system.
 """
 
-# The relative filename of the header file.
-_HEADER_FILENAME = "lib/{dirname}/{filename}.h"
-
-# The relative filename of the source file.
-_SOURCE_FILENAME = "lib/{dirname}/{filename}.cpp"
-
-# The relative filename of an additional file (header or source) defined for a
-# platformio_library target.
-_ADDITIONAL_FILENAME = "lib/{dirname}/{filename}"
-
 # Command that makes a directory
 _MAKE_DIR_COMMAND = "mkdir -p {dirname}"
 
 # Command that copies the source to the destination.
 _COPY_COMMAND = "cp {source} {destination}"
-
-# Command that zips files recursively. It enters the output directory first so
-# that the zipped path starts at lib/. It will return to the original directory
-# when finishing the command.
-_ZIP_COMMAND = "cd {output_dir} && zip -qq -r -u {zip_filename} lib/; cd -"
 
 # Command that unzips a zip archive into the specified directory. It will create
 # the destination directory if it doesn't exist.
@@ -70,83 +55,70 @@ PlatformIOLibraryInfo = provider(
 )
 
 def _platformio_library_impl(ctx):
-    """Collects all transitive dependencies and emits the zip output.
-
-    Outputs a zip file containing the library in the directory structure expected
-    by PlatformIO.
-
-    Args:
-      ctx: The Starlark context.
-    """
+    """Collects all transitive dependencies and emits the zip output."""
     name = ctx.label.name
+    inputs = []
+    outputs = []
+    commands = []
 
-    # Copy the header file to the desired destination.
-    header_file = ctx.actions.declare_file(
-        _HEADER_FILENAME.format(dirname = name, filename = name),
-    )
-    inputs = [ctx.file.hdr]
-    outputs = [header_file]
-    commands = [_COPY_COMMAND.format(
-        source = ctx.file.hdr.path,
-        destination = header_file.path,
-    )]
+    # Use a specific directory for this library to avoid conflicts.
+    staging_dir = name + "_staging"
 
-    # Copy all the additional header and source files.
-    for additional_files in [ctx.attr.add_hdrs, ctx.attr.add_srcs]:
-        for target in additional_files:
-            if len(target.files.to_list()) != 1:
-                fail("each target listed under add_hdrs or add_srcs must expand to " +
-                     "exactly one file, this expands to %d: %s" %
-                     (len(target.files), target.files))
+    # Copy all header and source files.
+    for target in ctx.attr.hdrs + ctx.attr.srcs:
+        for f in target.files.to_list():
+            # Use the actual filename from the file object
+            filename = f.basename
 
-            # The name of the label is the relative path to the file, this enables us
-            # to prepend "lib/" to the path. For PlatformIO, all the library files
-            # must be under lib/...
-            additional_file_name = target.label.name
-            additional_file_source = [f for f in target.files.to_list()][0]
-            additional_file_destination = ctx.actions.declare_file(
-                _ADDITIONAL_FILENAME.format(dirname = name, filename = additional_file_name),
+            # Heuristic: Only rename if it exactly matches the target name (case-insensitive).
+            file_basename_only = filename.rsplit(".", 1)[0] if "." in filename else filename
+            file_ext = "." + filename.rsplit(".", 1)[1] if "." in filename else ""
+
+            if file_basename_only.lower() == name.lower():
+                # Rename to match the exact library name for Arduino compatibility.
+                new_ext = file_ext
+                if file_ext == ".cc":
+                    new_ext = ".cpp"
+                filename = name + new_ext
+
+            dest_file = ctx.actions.declare_file(
+                "{}/lib/{}/{}".format(staging_dir, name, filename),
             )
-            inputs.append(additional_file_source)
-            outputs.append(additional_file_destination)
-            commands.append(_COPY_COMMAND.format(
-                source = additional_file_source.path,
-                destination = additional_file_destination.path,
+            inputs.append(f)
+            outputs.append(dest_file)
+            # Use cp -f to be safe
+            commands.append("mkdir -p {} && cp -f {} {}".format(
+                dest_file.dirname,
+                f.path,
+                dest_file.path,
             ))
 
-    # The src argument is optional, some C++ libraries might only have the header.
-    if ctx.attr.src != None:
-        source_file = ctx.actions.declare_file(
-            _SOURCE_FILENAME.format(dirname = name, filename = name),
-        )
-        inputs.append(ctx.file.src)
-        outputs.append(source_file)
-        commands.append(_COPY_COMMAND.format(
-            source = ctx.file.src.path,
-            destination = source_file.path,
-        ))
-
     # Zip the entire content of the library folder.
-    zip_file = ctx.actions.declare_file("%s.zip" % ctx.attr.name)
+    zip_file = ctx.actions.declare_file("%s.zip" % name)
     outputs.append(zip_file)
-    commands.append(_ZIP_COMMAND.format(
-        output_dir = zip_file.dirname,
-        zip_filename = zip_file.basename,
+
+    commands.append("cd {}/{} && zip -qq -r ../{} lib/".format(
+        zip_file.dirname,
+        staging_dir,
+        zip_file.basename,
     ))
+
     ctx.actions.run_shell(
         inputs = inputs,
         outputs = outputs,
         command = "\n".join(commands),
     )
 
-    # Collect the zip files produced by all transitive dependancies.
     transitive_zip_files = [
         dep[PlatformIOLibraryInfo].default_runfiles
         for dep in ctx.attr.deps
     ]
     runfiles = ctx.runfiles(files = [zip_file])
     runfiles = runfiles.merge_all(transitive_zip_files)
-    transitive_libdeps = []
+
+    # We include the library's own name in transitive_libdeps to ensure
+    # PlatformIO LDF finds it when it's unzipped into the project.
+    transitive_libdeps = [name]
     transitive_libdeps.extend(ctx.attr.lib_deps)
     for dep in ctx.attr.deps:
         transitive_libdeps.extend(dep[PlatformIOLibraryInfo].transitive_libdeps)
@@ -170,10 +142,8 @@ def _declare_outputs(ctx):
     """
     dirname = "%s_workdir" % ctx.attr.name
     platformio_ini = ctx.actions.declare_file("%s/platformio.ini" % dirname)
-    main_cpp = ctx.actions.declare_file("%s/src/main.cpp" % dirname)
     firmware_elf = ctx.actions.declare_file("%s/.pio/build/%s/firmware.elf" % (dirname, ctx.attr.board))
     return struct(
-        main_cpp = main_cpp,
         platformio_ini = platformio_ini,
         firmware_elf = firmware_elf,
     )
@@ -199,10 +169,17 @@ def _emit_ini_file_action(ctx, platformio_ini):
         if flag == "":
             continue
         build_flags.append(flag)
-    lib_deps = []
-    lib_deps.extend(ctx.attr.lib_deps)
+
+    # Collect and deduplicate lib_deps
+    lib_deps_map = {}
+    for lib in ctx.attr.lib_deps:
+        lib_deps_map[lib] = True
     for dep in ctx.attr.deps:
-        lib_deps.extend(dep[PlatformIOLibraryInfo].transitive_libdeps)
+        for lib in dep[PlatformIOLibraryInfo].transitive_libdeps:
+            lib_deps_map[lib] = True
+    
+    lib_deps = lib_deps_map.keys()
+
     substitutions = json.encode(struct(
         board = ctx.attr.board,
         platform = ctx.attr.platform,
@@ -225,23 +202,54 @@ def _emit_ini_file_action(ctx, platformio_ini):
         ],
     )
 
-def _emit_main_file_action(ctx, output_files):
-    """Emits a Bazel action that outputs the project main C++ file.
+def _emit_project_files_action(ctx, project_dirname):
+    """Emits a Bazel action that outputs the project source and header files.
 
     Args:
       ctx: The Starlark context.
-      output_files: List of output files declared by ctx.actions.declare_file().
+      project_dirname: The relative directory name for the project workdir.
     """
-    ctx.actions.run_shell(
-        inputs = [ctx.file.src],
-        outputs = [output_files.main_cpp],
-        command = _COPY_COMMAND.format(
-            source = ctx.file.src.path,
-            destination = output_files.main_cpp.path,
-        ),
-    )
+    commands = []
+    inputs = []
+    outputs = []
 
-def _emit_build_action(ctx, project_dir, output_files):
+    for target in ctx.attr.srcs:
+        for f in target.files.to_list():
+            filename = target.label.name
+            # Convert .cc to .cpp for PlatformIO compatibility and to avoid 
+            # dual-extension issues if lingering files exist.
+            if filename.endswith(".cc"):
+                filename = filename[:-3] + ".cpp"
+            
+            dest = ctx.actions.declare_file("%s/src/%s" % (project_dirname, filename))
+            inputs.append(f)
+            outputs.append(dest)
+            commands.append("mkdir -p {} && cp -f {} {}".format(
+                dest.dirname,
+                f.path,
+                dest.path,
+            ))
+
+    for target in ctx.attr.hdrs:
+        for f in target.files.to_list():
+            dest = ctx.actions.declare_file("%s/include/%s" % (project_dirname, target.label.name))
+            inputs.append(f)
+            outputs.append(dest)
+            commands.append("mkdir -p {} && cp -f {} {}".format(
+                dest.dirname,
+                f.path,
+                dest.path,
+            ))
+
+    if commands:
+        ctx.actions.run_shell(
+            inputs = inputs,
+            outputs = outputs,
+            command = "\n".join(commands),
+        )
+    return outputs
+
+def _emit_build_action(ctx, project_dir, output_files, project_inputs):
     """Emits a Bazel action that unzips the libraries and builds the project.
 
     Args:
@@ -249,6 +257,7 @@ def _emit_build_action(ctx, project_dir, output_files):
       project_dir: A string, the main directory of the PlatformIO project.
         This is where the zip files will be extracted.
       output_files: List of output files declared by ctx.actions.declare_file().
+      project_inputs: List of project source/header files.
     """
     transitive_zip_files = depset(
         transitive = [
@@ -267,7 +276,7 @@ def _emit_build_action(ctx, project_dir, output_files):
 
     # The PlatformIO build system needs the project configuration file, the main
     # file and all the transitive dependancies.
-    inputs = [output_files.platformio_ini, output_files.main_cpp]
+    inputs = [output_files.platformio_ini] + project_inputs
     for zip_file in transitive_zip_files.to_list():
         inputs.append(zip_file)
     ctx.actions.run_shell(
@@ -325,24 +334,17 @@ def _emit_executable_action(ctx, project_dir):
     )
 
 def _platformio_project_impl(ctx):
-    """Builds and optionally uploads (when executed) a PlatformIO project.
-
-    Outputs the C++ source file containing the Arduino setup() and loop()
-    functions renamed according to PlatformIO needs, a platformio_ini with the
-    project configuration file for PlatformIO and the firmware. The firmware_elf
-    is the compiled version of the Arduino firmware for the specified board.
-
-    Args:
-      ctx: The Starlark context.
-    """
+    """Builds and optionally uploads (when executed) a PlatformIO project."""
     output_files = _declare_outputs(ctx)
+    project_dirname = "%s_workdir" % ctx.attr.name
+    
     _emit_ini_file_action(ctx, output_files.platformio_ini)
-    _emit_main_file_action(ctx, output_files)
+    project_inputs = _emit_project_files_action(ctx, project_dirname)
 
     # Determine the build directory used by Bazel, that is the directory where
     # our output files will be placed.
     project_build_dir = output_files.platformio_ini.dirname
-    _emit_build_action(ctx, project_build_dir, output_files)
+    _emit_build_action(ctx, project_build_dir, output_files, project_inputs)
 
     # Determine the run directory used by Bazel, that is the directory where our
     # output files will be placed.
@@ -351,10 +353,9 @@ def _platformio_project_impl(ctx):
 
     default_info_files = [
         ctx.outputs.executable,
-        output_files.main_cpp,
         output_files.platformio_ini,
         output_files.firmware_elf,
-    ] + depset(
+    ] + project_inputs + depset(
         transitive = [
             dep[PlatformIOLibraryInfo].default_runfiles.files
             for dep in ctx.attr.deps
@@ -461,28 +462,15 @@ _platformio_library = rule(
     # --- END: Renamed original rule to be "private" ---
     implementation = _platformio_library_impl,
     attrs = {
-        "hdr": attr.label(
-            allow_single_file = [".h", ".hpp"],
-            mandatory = True,
-            doc = "A string, the name of the C++ header file. This is mandatory.",
-        ),
-        "src": attr.label(
-            allow_single_file = [".c", ".cc", ".cpp"],
-            doc = "A string, the name of the C++ source file. This is optional.",
-        ),
-        "add_hdrs": attr.label_list(
+        "hdrs": attr.label_list(
             allow_files = [".h", ".hpp"],
             allow_empty = True,
-            doc = """
-A list of labels, additional header files to include in the resulting zip file.
-""",
+            doc = "A list of labels, header files to include in the resulting zip file.",
         ),
-        "add_srcs": attr.label_list(
+        "srcs": attr.label_list(
             allow_files = [".c", ".cc", ".cpp"],
             allow_empty = True,
-            doc = """
-A list of labels, additional source files to include in the resulting zip file.
-""",
+            doc = "A list of labels, source files to include in the resulting zip file.",
         ),
         "deps": attr.label_list(
             providers = [DefaultInfo, PlatformIOLibraryInfo],
@@ -506,10 +494,7 @@ indirectly link this library.
 Defines a C++ library that can be imported in an PlatformIO project.
 
 The PlatformIO build system requires a set project directory structure. All
-libraries must be under the lib directory. Furthermore all libraries can only
-consist of a single header and a single source file. The name of the library
-must match the names of the header file, the source file and the subdirectory
-under the lib directory.
+libraries must be under the lib directory.
 Outputs a single zip file containing the C++ library in the directory structure
 expected by PlatformIO.
 """,
@@ -530,12 +515,19 @@ _platformio_project = rule(
             executable = True,
             cfg = "exec",
         ),
-        "src": attr.label(
-            allow_single_file = [".cc"],
+        "srcs": attr.label_list(
+            allow_files = [".c", ".cc", ".cpp"],
+            allow_empty = False,
             mandatory = True,
             doc = """
-A string, the name of the C++ source file, the main file for
-the project that contains the Arduino setup() and loop() functions. This is mandatory.
+A list of labels, source files for the project.
+""",
+        ),
+        "hdrs": attr.label_list(
+            allow_files = [".h", ".hpp"],
+            allow_empty = True,
+            doc = """
+A list of labels, header files for the project.
 """,
         ),
         "board": attr.string(
@@ -638,93 +630,106 @@ A list of external (PlatformIO) libraries that this project depends on.
     doc = """
 Defines a project that will be built and uploaded using PlatformIO.
 
-Creates, configures and runs a PlatformIO project. This is equivalent to running:
+Creates, configures and runs a PlatformIO project.
 
 This rule is executable and when executed, it will upload the compiled firmware
-to the connected Arduino device. This is equivalent to running:
-platformio run -t upload
-
-
-Outputs the C++ source file containing the Arduino setup() and loop()
-functions renamed according to PlatformIO needs, a platformio_ini with the
-project configuration file for PlatformIO and the firmware. The firmware_elf
-is the compiled version of the Arduino firmware for the specified board an
-the firmware_hex is the firmware in the hexadecimal format ready for
-uploading.
+to the connected Arduino device.
 """,
 )
 
+def _get_clion_label(label):
+    """Transforms a platformio_library label to its corresponding hidden cc_library label."""
+    if label.startswith(":"):
+        return ":__{}_clion".format(label[1:])
+    if label.startswith("//") or label.startswith("@"):
+        if ":" in label:
+            parts = label.rsplit(":", 1)
+            return "{}:__{}_clion".format(parts[0], parts[1])
+        else:
+            # For labels like //path/to which means //path/to:to
+            parts = label.rsplit("/", 1)
+            return "{}:__{}_clion".format(label, parts[-1])
+    return label
+
 # --- START: NEW Macro for platformio_library ---
-def platformio_library(name, hdr, src = None, add_hdrs = [], add_srcs = [], deps = [], ide_deps = [], esp32_framework_include_path = None, includes = [], **kwargs):
+def platformio_library(name, srcs = [], hdrs = [], deps = [], native_deps = [], esp32_framework_include_path = None, includes = [], **kwargs):
     """A macro that creates a platformio_library and a backing cc_library for IDE support."""
+
+    # Filter kwargs to only pass what the rule expects
+    rule_kwargs = {}
+    for k, v in kwargs.items():
+        if k in ["lib_deps", "visibility", "tags", "testonly"]:
+            rule_kwargs[k] = v
 
     # 1. Create the actual platformio_library target
     _platformio_library(
         name = name,
-        hdr = hdr,
-        src = src,
-        add_hdrs = add_hdrs,
-        add_srcs = add_srcs,
+        srcs = srcs,
+        hdrs = hdrs,
         deps = deps,
-        **kwargs
+        **rule_kwargs
     )
 
-    # 2. Create the hidden cc_library for CLion
-    clion_srcs = ([src] if src else []) + add_srcs
-    clion_hdrs = [hdr] + add_hdrs
+    # 2. Create the hidden cc_library for IDE support
+    clion_deps_ = [_get_clion_label(d) for d in deps]
 
-    # Transform deps from ":my_lib" to ":__my_lib_clion"
-    clion_deps_ = ["__{}_clion".format(d.split(":")[-1]) for d in deps]
-
-    # 2. Create the hidden cc_binary for CLion
     clion_includes = list(includes)  # Create a mutable copy
     if esp32_framework_include_path:
         clion_includes.append(esp32_framework_include_path)
 
     native.cc_library(
         name = "__{}_clion".format(name),
-        srcs = clion_srcs,
-        hdrs = clion_hdrs,
+        srcs = srcs,
+        hdrs = hdrs,
         includes = clion_includes,
-        deps = clion_deps_ + ide_deps,
-        tags = ["clion"],
+        deps = clion_deps_ + native_deps,
+        tags = ["clion", "manual"],
+        visibility = kwargs.get("visibility"),
     )
 
 # --- END: NEW Macro for platformio_library ---
 
 # --- START: NEW Macro for platformio_project ---
-def platformio_project(name, src, deps = [], ide_deps = [], esp32_framework_include_path = None, includes = [], **kwargs):
+def platformio_project(name, srcs = [], hdrs = [], deps = [], native_deps = [], esp32_framework_include_path = None, includes = [], **kwargs):
     """A macro that creates a platformio_project and a backing cc_binary for IDE support."""
+
+    # Filter kwargs to only pass what the rule expects
+    rule_kwargs = {}
+    for k, v in kwargs.items():
+        if k in ["board", "port", "platform", "framework", "environment_kwargs", "build_flags", "programmer", "lib_ldf_mode", "lib_deps", "visibility", "tags", "testonly"]:
+            rule_kwargs[k] = v
 
     # 1. Create the actual platformio_project target
     _platformio_project(
         name = name,
-        src = src,
+        srcs = srcs,
+        hdrs = hdrs,
         deps = deps,
-        **kwargs
+        **rule_kwargs
     )
 
-    # 2. Create the hidden cc_binary for CLion
+    # 2. Create the hidden cc_binary for IDE support
     clion_includes = list(includes)  # Create a mutable copy
     if esp32_framework_include_path:
         clion_includes.append(esp32_framework_include_path)
 
-    # Transform deps from ":my_lib" to ":__my_lib_clion"
-    clion_deps_ = ["__{}_clion".format(d.split(":")[-1]) for d in deps]
+    clion_deps_ = [_get_clion_label(d) for d in deps]
 
     native.cc_binary(
         name = "__{}_clion".format(name),
-        srcs = [src],
-        deps = clion_deps_ + ide_deps,
+        srcs = srcs,
+        deps = clion_deps_ + native_deps,
         includes = clion_includes,
         copts = [
             "-DARDUINO_ARCH_ESP32",
             "-DARDUINO=10805",
         ],
-        tags = ["clion"],
+        tags = ["clion", "manual"],
+        visibility = kwargs.get("visibility"),
     )
 
 # --- END: NEW Macro for platformio_project ---
+
 
 platformio_fs = rule(
     implementation = _platformio_fs_impl,

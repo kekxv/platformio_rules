@@ -34,12 +34,12 @@ cc_library(
 
 platformio_library(
     name = "Arduino_interface",
-    hdr = "arduino_interface.h",
+    hdrs = ["arduino_interface.h"],
 )
 
 platformio_library(
     name = "Arduino_impl",
-    src = "arduino_impl.cc",
-    hdr = "arduino_impl.h",
+    srcs = ["arduino_impl.cc"],
+    hdrs = ["arduino_impl.h"],
     deps = [":Arduino_interface"],
 )

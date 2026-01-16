@@ -16,14 +16,13 @@ load("//platformio:platformio.bzl", "platformio_project")
 
 platformio_project(
     name = "binary_counter",
-    src = "binary_counter.cc",
+    srcs = ["binary_counter.cc"],
     board = "nodemcuv2",
     framework = "arduino",
     platform = "espressif8266",
     deps = [
-        "//tests/arduino:Arduino_impl",
-        "//tests/arduino:Arduino_interface",
         "//tests/binary_counter/button_presses:Button_presses",
+        "//tests/binary_counter/convert:Convert",
         "//tests/binary_counter/led_display:Led_display",
     ],
 )

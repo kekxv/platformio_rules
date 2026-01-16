@@ -43,7 +43,7 @@ configs = [
 
 [platformio_project(
     name = "binary_counter_%s" % config["name"],
-    src = "binary_counter.cc",
+    srcs = ["binary_counter.cc"],
     board = config["board"],
     framework = "arduino",
     platform = "atmelavr",

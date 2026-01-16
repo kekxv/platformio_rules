@@ -7,7 +7,7 @@ filegroup(
 
 platformio_project(
     name = "fs_reader",
-    src = "fs_reader.cc",
+    srcs = ["fs_reader.cc"],
     board = "esp32-s3-devkitc-1",
     framework = "arduino",
     platform = "espressif32",
