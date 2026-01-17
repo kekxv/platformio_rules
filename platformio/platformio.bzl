@@ -342,7 +342,16 @@ def _emit_executable_action(ctx, project_dir):
     )
 
     commands = [_SHELL_HEADER]
-    args = ["run", "-d", project_dir, "-t", "upload"]
+    # Use the command specified in the attribute (default is upload)
+    pio_cmd = ctx.attr.pio_command
+    args = ["run", "-d", project_dir]
+    
+    # If the command is 'debug', we use the 'debug' base command instead of 'run -t debug'
+    if pio_cmd == "debug":
+        args = ["debug", "-d", project_dir, "--ide", "gdb"]
+    else:
+        args.extend(["-t", pio_cmd])
+
     for zip_file in transitive_zip_files.to_list():
         args.extend(["--bazel-unzip", "{}:{}".format(zip_file.short_path, project_dir)])
     
@@ -677,6 +686,9 @@ Library dependency finder for PlatformIO
 A list of external (PlatformIO) libraries that this project depends on.
 """,
         ),
+        "pio_command": attr.string(
+            default = "upload",
+        ),
         # This attribute is only read by the macro, not the rule implementation
         "esp32_framework_include_path": attr.string(),
     },
@@ -756,7 +768,7 @@ def platformio_project(name, srcs = [], hdrs = [], deps = [], native_deps = [], 
         if k in ["board", "port", "platform", "framework", "environment_kwargs", "build_flags", "programmer", "lib_ldf_mode", "lib_deps", "visibility", "tags", "testonly"]:
             rule_kwargs[k] = v
 
-    # 1. Create the actual platformio_project target
+    # 1. Create the actual platformio_project target (defaults to upload)
     _platformio_project(
         name = name,
         srcs = srcs,
@@ -764,6 +776,19 @@ def platformio_project(name, srcs = [], hdrs = [], deps = [], native_deps = [], 
         deps = deps,
         defines = defines,
         local_defines = local_defines,
+        pio_command = "upload",
+        **rule_kwargs
+    )
+
+    # 2. Create a debug target
+    _platformio_project(
+        name = name + ".debug",
+        srcs = srcs,
+        hdrs = hdrs,
+        deps = deps,
+        defines = defines,
+        local_defines = local_defines,
+        pio_command = "debug",
         **rule_kwargs
     )
 
