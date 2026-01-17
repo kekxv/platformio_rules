@@ -43,6 +43,31 @@ PlatformIOLibraryInfo = provider(
     },
 )
 
+PlatformIOKeyInfo = provider(
+    "Information needed for flash encryption and signing.",
+    fields = {
+        "key": "The key file",
+        "type": "Key type: signing or encryption",
+    },
+)
+
+def _platformio_key_impl(ctx):
+    return [
+        PlatformIOKeyInfo(
+            key = ctx.file.key,
+            type = ctx.attr.type,
+        ),
+        DefaultInfo(files = depset([ctx.file.key])),
+    ]
+
+platformio_key = rule(
+    implementation = _platformio_key_impl,
+    attrs = {
+        "key": attr.label(allow_single_file = True, mandatory = True),
+        "type": attr.string(values = ["signing", "encryption"], mandatory = True),
+    },
+)
+
 def _platformio_library_impl(ctx):
     """Collects all transitive dependencies and emits the zip output."""
     name = ctx.label.name
@@ -171,9 +196,10 @@ def _emit_ini_file_action(ctx, platformio_ini):
     # Add transitive defines from dependencies
     transitive_defines_list = []
     for dep in ctx.attr.deps:
-        for d in dep[PlatformIOLibraryInfo].transitive_defines.to_list():
-            if d not in transitive_defines_list:
-                transitive_defines_list.append(d)
+        if PlatformIOLibraryInfo in dep:
+            for d in dep[PlatformIOLibraryInfo].transitive_defines.to_list():
+                if d not in transitive_defines_list:
+                    transitive_defines_list.append(d)
     
     for d in transitive_defines_list:
         # Check if it's already added by the target's own defines to avoid duplicates
@@ -186,8 +212,9 @@ def _emit_ini_file_action(ctx, platformio_ini):
     for lib in ctx.attr.lib_deps:
         lib_deps_map[lib] = True
     for dep in ctx.attr.deps:
-        for lib in dep[PlatformIOLibraryInfo].transitive_libdeps:
-            lib_deps_map[lib] = True
+        if PlatformIOLibraryInfo in dep:
+            for lib in dep[PlatformIOLibraryInfo].transitive_libdeps:
+                lib_deps_map[lib] = True
     
     lib_deps = lib_deps_map.keys()
 
@@ -261,19 +288,11 @@ def _emit_project_files_action(ctx, project_dirname):
     return outputs
 
 def _emit_build_action(ctx, project_dir, output_files, project_inputs):
-    """Emits a Bazel action that unzips the libraries and builds the project.
-
-    Args:
-      ctx: The Starlark context.
-      project_dir: A string, the main directory of the PlatformIO project.
-        This is where the zip files will be extracted.
-      output_files: List of output files declared by ctx.actions.declare_file().
-      project_inputs: List of project source/header files.
-    """
+    """Emits a Bazel action that unzips the libraries and builds the project."""
     transitive_zip_files = depset(
         transitive = [
             dep[PlatformIOLibraryInfo].default_runfiles.files
-            for dep in ctx.attr.deps
+            for dep in ctx.attr.deps if PlatformIOLibraryInfo in dep
         ],
     )
 
@@ -281,9 +300,17 @@ def _emit_build_action(ctx, project_dir, output_files, project_inputs):
     for zip_file in transitive_zip_files.to_list():
         args.extend(["--bazel-unzip", "{}:{}".format(zip_file.path, project_dir)])
 
-    # The PlatformIO build system needs the project configuration file, the main
-    # file and all the transitive dependancies.
+    # Search for keys in deps
     inputs = [output_files.platformio_ini, ctx.executable._pio_tool] + project_inputs
+    for dep in ctx.attr.deps:
+        if PlatformIOKeyInfo in dep:
+            info = dep[PlatformIOKeyInfo]
+            inputs.append(info.key)
+            if info.type == "signing":
+                args.extend(["--signing-key", info.key.path])
+            elif info.type == "encryption":
+                args.extend(["--encryption-key", info.key.path])
+
     for zip_file in transitive_zip_files.to_list():
         inputs.append(zip_file)
     
@@ -310,7 +337,7 @@ def _emit_executable_action(ctx, project_dir):
     transitive_zip_files = depset(
         transitive = [
             dep[PlatformIOLibraryInfo].default_runfiles.files
-            for dep in ctx.attr.deps
+            for dep in ctx.attr.deps if PlatformIOLibraryInfo in dep
         ],
     )
 
@@ -319,6 +346,15 @@ def _emit_executable_action(ctx, project_dir):
     for zip_file in transitive_zip_files.to_list():
         args.extend(["--bazel-unzip", "{}:{}".format(zip_file.short_path, project_dir)])
     
+    # Pass keys
+    for dep in ctx.attr.deps:
+        if PlatformIOKeyInfo in dep:
+            info = dep[PlatformIOKeyInfo]
+            if info.type == "signing":
+                args.extend(["--signing-key", info.key.short_path])
+            elif info.type == "encryption":
+                args.extend(["--encryption-key", info.key.short_path])
+
     commands.append("{} {}".format(ctx.executable._pio_tool.short_path, " ".join(args)))
     
     ctx.actions.write(
@@ -353,12 +389,17 @@ def _platformio_project_impl(ctx):
         output_files.firmware_elf,
     ] + project_inputs
     
+    # Add key files to runfiles
+    for dep in ctx.attr.deps:
+        if PlatformIOKeyInfo in dep:
+            runfiles_files.append(dep[PlatformIOKeyInfo].key)
+
     runfiles = ctx.runfiles(files = runfiles_files)
     runfiles = runfiles.merge(ctx.attr._pio_tool[DefaultInfo].default_runfiles)
     
     transitive_runfiles = [
         dep[PlatformIOLibraryInfo].default_runfiles
-        for dep in ctx.attr.deps
+        for dep in ctx.attr.deps if PlatformIOLibraryInfo in dep
     ]
     runfiles = runfiles.merge_all(transitive_runfiles)
 
@@ -615,7 +656,6 @@ https://www.amazon.com/gp/product/B09DG384MK
 """,
         ),
         "deps": attr.label_list(
-            providers = [PlatformIOLibraryInfo],
             doc = """
 A list of Bazel targets, the platformio_library targets that this one
 depends on.
