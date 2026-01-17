@@ -1,0 +1,59 @@
+From 563fca01f2a2b47510ec544e780cd8969835bbc3 Mon Sep 17 00:00:00 2001
+From: caesar <caesar@kekxv.com>
+Date: Sat, 17 Jan 2026 15:12:18 +0800
+Subject: [PATCH] update
+
+---
+ BUILD.bazel  | 29 +++++++++++++++++++++++++++++
+ MODULE.bazel |  3 +++
+ 2 files changed, 32 insertions(+)
+ create mode 100644 BUILD.bazel
+ create mode 100644 MODULE.bazel
+
+diff --git a/BUILD.bazel b/BUILD.bazel
+new file mode 100644
+index 0000000..6096ae3
+--- /dev/null
++++ b/BUILD.bazel
+@@ -0,0 +1,29 @@
++package(default_visibility = ["//visibility:public"])
++cc_library(
++    name = "headers",
++    hdrs = glob([
++        "cores/esp32/**/*.h",
++        "cores/esp32/**/*.hpp",
++        "variants/esp32/**/*.h",
++        "libraries/**/*.h",
++        "libraries/**/*.hpp",
++    ]),
++    srcs = glob([
++        "cores/esp32/**/*.cpp",
++        "cores/esp32/**/*.c",
++        "variants/esp32/**/*.cpp",
++        "variants/esp32/**/*.c",
++        "libraries/**/*.c",
++        "libraries/**/*.cpp",
++    ]),
++    includes = [
++        "cores/esp32",
++        "variants/esp32",
++    ],
++    defines = [
++        "ESP32",
++        "ARDUINO=10812",
++        "ARDUINO_ESP32_DEV",
++        "ARDUINO_ARCH_ESP32",
++    ],
++)
+diff --git a/MODULE.bazel b/MODULE.bazel
+new file mode 100644
+index 0000000..5b61322
+--- /dev/null
++++ b/MODULE.bazel
+@@ -0,0 +1,3 @@
++module(name = "platformio_rules",version = "3.2.0")
++bazel_dep(name = "platforms", version = "1.0.0")
++bazel_dep(name = "rules_cc", version = "0.2.16")
+-- 
+2.50.1 (Apple Git-155)
+

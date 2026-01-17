@@ -17,13 +17,11 @@ pip.parse(
 )
 use_repo(pip, "py_deps")
 
-# External archives
 http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 # Lightweight ESP32 Arduino Core for IDE support
 http_archive(
     name = "platformio_framework_esp32",
-    strip_prefix = "esp32-3.2.0",
     build_file_content = """
 package(default_visibility = ["//visibility:public"])
 cc_library(
@@ -35,14 +33,29 @@ cc_library(
         "libraries/**/*.h",
         "libraries/**/*.hpp",
     ]),
+    srcs = glob([
+        "cores/esp32/**/*.cpp",
+        "cores/esp32/**/*.c",
+        "variants/esp32/**/*.cpp",
+        "variants/esp32/**/*.c",
+        "libraries/**/*.c",
+        "libraries/**/*.cpp",
+    ]),
     includes = [
         "cores/esp32",
         "variants/esp32",
     ],
+    defines = [
+        "ESP32",
+        "ARDUINO=10812",
+        "ARDUINO_ESP32_DEV",
+        "ARDUINO_ARCH_ESP32",
+    ],
 )
 """,
-    sha256 = "d38b16fef6e519fc0d19bc5af0b39cdbed7dfc2ce69214c1971ded0e61ecd911",
-    urls = ["https://github.com/espressif/arduino-esp32/releases/download/3.2.0/esp32-3.2.0.zip"],
+    integrity = "sha256-KU51T463ov0Ls4sIv8hzjhK0ZVBVrEUp2MV6wiCFZCw=",
+    strip_prefix = "esp32-3.3.5",
+    urls = ["https://github.com/espressif/arduino-esp32/releases/download/3.3.5/esp32-3.3.5.zip"],
 )
 
 http_archive(
